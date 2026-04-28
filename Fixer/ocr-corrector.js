@@ -157,11 +157,21 @@ async function getFilePageCount(file) {
 }
 
 async function processPDF(file, fileIndex, totalFiles) {
-    const result = {
-        filename: file.name,
+    const currentFileName = file.name;
+    const result = Object.freeze({
+        filename: currentFileName,
         previewDataUrl: '',
         ocrBlobUrl: null,
-        ocrFilename: generateOcrFilename(file.name),
+        ocrFilename: generateOcrFilename(currentFileName),
+        totalPages: 0,
+        processedPages: 0,
+        failedPages: []
+    });
+    const mutableResult = {
+        filename: currentFileName,
+        previewDataUrl: '',
+        ocrBlobUrl: null,
+        ocrFilename: result.ocrFilename,
         totalPages: 0,
         processedPages: 0,
         failedPages: []
@@ -171,26 +181,26 @@ async function processPDF(file, fileIndex, totalFiles) {
     try {
         arrayBuffer = await file.arrayBuffer();
     } catch (e) {
-        console.error('Failed to read file:', file.name, e);
+        console.error('[', currentFileName, '] Failed to read file:', e);
         return result;
     }
 
     let doc;
     try {
         doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        result.totalPages = doc.numPages;
+        mutableResult.totalPages = doc.numPages;
         
         const page1 = await doc.getPage(1);
         const viewport = page1.getViewport({ scale: 1 });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        await page1.render({ canvasContext: ctx, viewport: viewport }).promise;
-        result.previewDataUrl = canvas.toDataURL('image/png');
+        const previewCanvas = document.createElement('canvas');
+        previewCanvas.width = viewport.width;
+        previewCanvas.height = viewport.height;
+        const previewCtx = previewCanvas.getContext('2d');
+        await page1.render({ canvasContext: previewCtx, viewport: viewport }).promise;
+        mutableResult.previewDataUrl = previewCanvas.toDataURL('image/png');
     } catch (e) {
-        console.error('Failed to load PDF:', file.name, e);
-        result.totalPages = 0;
+        console.error('[', currentFileName, '] Failed to load PDF:', e);
+        mutableResult.totalPages = 0;
         return result;
     }
 
@@ -201,59 +211,68 @@ async function processPDF(file, fileIndex, totalFiles) {
         pdfDoc = await PDFDocument.create();
         helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
     } catch (e) {
-        console.error('Failed to create PDF document:', e);
+        console.error('[', currentFileName, '] Failed to create PDF document:', e);
         return result;
     }
 
-    const numPages = result.totalPages;
+    const numPages = mutableResult.totalPages;
 
-    for (let i = 1; i <= numPages; i++) {
-        const pageProgress = (i - 1) / numPages;
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        const pageProgress = (pageNum - 1) / numPages;
         const overallPercent = getOverallProgress(pageProgress);
-        showProgress(`OCR: ${file.name} (第 ${i}/${numPages} 页)`, overallPercent, '#34d49c');
+        showProgress(`OCR: ${currentFileName} (第 ${pageNum}/${numPages} 页)`, overallPercent, '#34d49c');
 
         let page;
         try {
-            page = await doc.getPage(i);
+            page = await doc.getPage(pageNum);
         } catch (e) {
-            console.error(`Failed to get page ${i} of ${file.name}:`, e);
-            result.failedPages.push(i);
+            console.error('[', currentFileName, '] Failed to get page', pageNum, ':', e);
+            mutableResult.failedPages.push(pageNum);
             continue;
         }
 
-        let imgDataUrl;
+        let imgDataUrl = null;
+        let currentCanvas = null;
+        let canvasWidth = 0;
+        let canvasHeight = 0;
         try {
             const viewport = page.getViewport({ scale: 2 });
-            const canvas = document.createElement('canvas');
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            const ctx = canvas.getContext('2d');
+            currentCanvas = document.createElement('canvas');
+            currentCanvas.width = viewport.width;
+            currentCanvas.height = viewport.height;
+            canvasWidth = viewport.width;
+            canvasHeight = viewport.height;
+            const ctx = currentCanvas.getContext('2d');
             await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-            imgDataUrl = canvas.toDataURL('image/png');
+            imgDataUrl = currentCanvas.toDataURL('image/png');
         } catch (e) {
-            console.error(`Failed to render page ${i} of ${file.name}:`, e);
-            result.failedPages.push(i);
+            console.error('[', currentFileName, '] Failed to render page', pageNum, ':', e);
+            mutableResult.failedPages.push(pageNum);
             continue;
         }
 
         let ocrResult = null;
         try {
+            const capturedPageNum = pageNum;
+            const capturedNumPages = numPages;
+            const capturedFileName = currentFileName;
+            
             ocrResult = await Tesseract.recognize(
                 imgDataUrl,
                 'ita+eng',
                 {
                     logger: m => {
                         if (m.status === 'recognizing text') {
-                            const ocrProgress = (i - 1 + m.progress) / numPages;
+                            const ocrProgress = (capturedPageNum - 1 + m.progress) / capturedNumPages;
                             const overallOcrPercent = getOverallProgress(ocrProgress);
-                            showProgress(`OCR: ${file.name} (第 ${i}/${numPages} 页, ${Math.round(m.progress * 100)}%)`, overallOcrPercent, '#34d49c');
+                            showProgress(`OCR: ${capturedFileName} (第 ${capturedPageNum}/${capturedNumPages} 页, ${Math.round(m.progress * 100)}%)`, overallOcrPercent, '#34d49c');
                         }
                     }
                 }
             );
         } catch (e) {
-            console.error(`OCR error on page ${i} of ${file.name}:`, e);
-            result.failedPages.push(i);
+            console.error('[', currentFileName, '] OCR error on page', pageNum, ':', e);
+            mutableResult.failedPages.push(pageNum);
             continue;
         }
 
@@ -268,7 +287,7 @@ async function processPDF(file, fileIndex, totalFiles) {
                 ocrResult.data.words.forEach(word => {
                     if (!word.text.trim()) return;
                     const x = word.bbox.x0;
-                    const y = canvas.height - word.bbox.y1;
+                    const y = canvasHeight - word.bbox.y1;
                     const boxHeight = word.bbox.y1 - word.bbox.y0;
                     const maxWidth = word.bbox.x1 - word.bbox.x0;
                     const fontSize = Math.max(7, Math.min(32, boxHeight * 0.85));
@@ -285,28 +304,38 @@ async function processPDF(file, fileIndex, totalFiles) {
                 });
             }
             
-            result.processedPages++;
+            mutableResult.processedPages++;
         } catch (e) {
-            console.error(`Failed to add page ${i} to output PDF of ${file.name}:`, e);
-            result.failedPages.push(i);
+            console.error('[', currentFileName, '] Failed to add page', pageNum, 'to output PDF:', e);
+            mutableResult.failedPages.push(pageNum);
             continue;
         }
     }
 
-    processedPagesCount += numPages;
+    processedPagesCount += mutableResult.processedPages;
 
     const finalPercent = getOverallProgress(1);
-    showProgress(`保存中: ${file.name}`, finalPercent, '#34d49c');
+    showProgress(`保存中: ${currentFileName}`, finalPercent, '#34d49c');
 
     try {
         const pdfBytes = await pdfDoc.save();
-        result.ocrBlobUrl = URL.createObjectURL(new Blob([pdfBytes], { type: 'application/pdf' }));
+        mutableResult.ocrBlobUrl = URL.createObjectURL(new Blob([pdfBytes], { type: 'application/pdf' }));
     } catch (e) {
-        console.error('Failed to save output PDF:', file.name, e);
-        result.ocrBlobUrl = null;
+        console.error('[', currentFileName, '] Failed to save output PDF:', e);
+        mutableResult.ocrBlobUrl = null;
     }
 
-    return result;
+    const finalResult = {
+        filename: mutableResult.filename,
+        previewDataUrl: mutableResult.previewDataUrl,
+        ocrBlobUrl: mutableResult.ocrBlobUrl,
+        ocrFilename: mutableResult.ocrFilename,
+        totalPages: mutableResult.totalPages,
+        processedPages: mutableResult.processedPages,
+        failedPages: mutableResult.failedPages.slice()
+    };
+
+    return finalResult;
 }
 
 function filterFiles(files) {

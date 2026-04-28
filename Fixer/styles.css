@@ -124,6 +124,24 @@ body {
 .results-table th {
     background: #f4f8ff;
 }
+.status-cell {
+    font-weight: 500;
+    cursor: help;
+}
+.status-success {
+    color: #10b981;
+}
+.status-warning {
+    color: #f59e0b;
+}
+.status-error {
+    color: #ef4444;
+}
+.pdf-placeholder {
+    color: #888;
+    font-style: italic;
+    padding: 16px;
+}
 /* Larger PDF preview */
 .pdf-preview {
     width: 96px;
@@ -246,5 +264,17 @@ body {
     }
     .tolerance-label {
         color: #e3e7ee;
+    }
+    .status-success {
+        color: #34d399;
+    }
+    .status-warning {
+        color: #fbbf24;
+    }
+    .status-error {
+        color: #f87171;
+    }
+    .pdf-placeholder {
+        color: #666;
     }
 }
